@@ -81,11 +81,9 @@ jobs:
       - name: Verify signatures exist
         shell: pwsh
         run: |
-          $zip = Get-ChildItem "signed" -Filter "*.zip" | Select-Object -First 1
-          if (-not $zip) { throw "No signed zip returned from SignPath" }
-          Write-Host "Signed zip: $($zip.FullName)"
-          Expand-Archive -Path $zip.FullName -DestinationPath "signed-extracted" -Force
-          $files = Get-ChildItem "signed-extracted" -Include *.exe,*.msi -Recurse
+          Write-Host "Contents of signed/:"
+          Get-ChildItem "signed" -Recurse
+          $files = Get-ChildItem "signed" -Include *.exe,*.msi -Recurse
           if ($files.Count -eq 0) { throw "No signed files found" }
           foreach ($f in $files) {
             $sig = Get-AuthenticodeSignature $f.FullName

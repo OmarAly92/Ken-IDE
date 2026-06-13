@@ -1,5 +1,5 @@
 import { Button } from "@/components/ui/button";
-import { useUpdater } from "@/modules/updater";
+import { useUpdater, UPDATER_ENABLED } from "@/modules/updater";
 import { GithubIcon, Globe02Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { getName, getVersion } from "@tauri-apps/api/app";
@@ -121,13 +121,15 @@ export function AboutSection() {
 
       <div className="flex flex-col gap-1.5">
         <div className="flex gap-2">
-          <Button
-            size="sm"
-            onClick={onUpdateClick}
-            disabled={checking || downloading || ready}
-          >
-            {checkLabel}
-          </Button>
+          {UPDATER_ENABLED && (
+            <Button
+              size="sm"
+              onClick={onUpdateClick}
+              disabled={checking || downloading || ready}
+            >
+              {checkLabel}
+            </Button>
+          )}
           <Button
             variant="outline"
             size="sm"

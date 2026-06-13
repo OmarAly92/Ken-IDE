@@ -32,6 +32,10 @@ fn kind_for(node_kind: &str) -> Option<SymbolKind> {
     match node_kind {
         "function_declaration" => Some(SymbolKind::Function),
         "class_declaration" => Some(SymbolKind::Class),
+        "method_definition" => Some(SymbolKind::Method),
+        "interface_declaration" => Some(SymbolKind::Interface),
+        "type_alias_declaration" => Some(SymbolKind::TypeAlias),
+        "enum_declaration" => Some(SymbolKind::Enum),
         _ => None,
     }
 }
@@ -93,6 +97,35 @@ mod tests {
                     start_line: 5,
                     end_line: 6,
                 },
+            ]
+        );
+    }
+
+    #[test]
+    fn extracts_methods_interfaces_type_aliases_and_enums() {
+        let src = concat!(
+            "interface Repo {\n",
+            "  id: number;\n",
+            "}\n",
+            "type Id = string;\n",
+            "enum Color {\n",
+            "  Red,\n",
+            "}\n",
+            "class Store {\n",
+            "  save() {}\n",
+            "}\n",
+        );
+        let symbols = extract_symbols(src);
+        let pairs: Vec<(&str, &SymbolKind)> =
+            symbols.iter().map(|s| (s.name.as_str(), &s.kind)).collect();
+        assert_eq!(
+            pairs,
+            vec![
+                ("Repo", &SymbolKind::Interface),
+                ("Id", &SymbolKind::TypeAlias),
+                ("Color", &SymbolKind::Enum),
+                ("Store", &SymbolKind::Class),
+                ("save", &SymbolKind::Method),
             ]
         );
     }

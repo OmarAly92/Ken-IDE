@@ -74,6 +74,12 @@ pub fn extract_symbols(source: &str) -> Vec<Symbol> {
     out
 }
 
+#[tauri::command]
+pub fn index_file_symbols(path: String) -> Result<Vec<Symbol>, String> {
+    let source = std::fs::read_to_string(&path).map_err(|e| format!("{path}: {e}"))?;
+    Ok(extract_symbols(&source))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -1,6 +1,6 @@
 pub mod modules;
 
-use modules::{agent, fs, git, history, net, pty, secrets, shell, workspace};
+use modules::{agent, fs, git, history, index, net, pty, secrets, shell, workspace};
 use std::sync::Mutex;
 use tauri::{Emitter, Manager, State, WebviewUrl, WebviewWindowBuilder};
 #[cfg(target_os = "macos")]
@@ -240,6 +240,7 @@ pub fn run() {
             history::history_commands,
             history::history_record,
             history::history_list,
+            index::symbols::index_file_symbols,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

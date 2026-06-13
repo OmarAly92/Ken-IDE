@@ -161,6 +161,8 @@ pub fn run() {
         .manage(fs::watch::FsWatchState::default())
         .manage(history::HistoryState::default())
         .manage(fs::grep::ContentSearchState::default())
+        .manage(index::store::IndexStore::default())
+        .manage(index::project::IndexWatchState::default())
         .manage({
             let registry = workspace::WorkspaceRegistry::default();
             workspace::bootstrap_registry(&registry);
@@ -241,6 +243,9 @@ pub fn run() {
             history::history_record,
             history::history_list,
             index::symbols::index_file_symbols,
+            index::project::index_project,
+            index::project::query_symbols,
+            index::project::index_status,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

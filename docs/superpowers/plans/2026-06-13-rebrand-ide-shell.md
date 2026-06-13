@@ -2,7 +2,11 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Rename the cloned Terax app to "Ken IDE" everywhere it is user-facing, leaving internal wire identifiers intact, so the app boots and presents as Ken IDE with its existing JetBrains-style chrome.
+**Goal:** Rename the cloned Terax app to "Ken IDE" everywhere it is user-facing — app shell chrome (window/document titles, About, default theme), AI assistant identity (renamed to "Ken"), updater dialog copy, and settings copy — leaving internal wire identifiers intact, so the app boots and presents as Ken IDE with its existing JetBrains-style chrome.
+
+**Naming convention:** the application/product is **"Ken IDE"**; the embedded AI assistant is **"Ken"**.
+
+> **Scope note (added during execution):** This plan originally covered only the app shell chrome (Tasks 1–4). Final whole-branch review found ~24 additional user-facing "Terax" strings in the AI surfaces, updater dialog, and settings copy. Task 5 was folded in to cover them so the goal genuinely holds. The deb/rpm install-command filenames and the `TERAX.md` project-memory convention remain deliberately unchanged (see below + Known Follow-ups).
 
 **Architecture:** This is Plan 2 of the Ken IDE build (see `docs/superpowers/specs/ken-ide-implementation-plans.md`). The cloned shell (`src/app/App.tsx`) already realizes the §6.1 layout — top Header+search, a left tool-window rail (`SidebarRail` → Explorer / Source Control), the center editor/terminal surface, and a bottom `StatusBar`. No structural reshape is required. This plan therefore does the rebrand (the real "boots as Ken IDE" deliverable) plus a small, bounded chrome-naming alignment (window-title fallback, default-theme display name, About panel). Deeper visual theming, the dockable tool-window framework, and Ctrl+1..N toggles are intentionally deferred to later plans (Plan 12 / themes work).
 
@@ -31,6 +35,8 @@ These exact strings are used throughout the tasks. If any is wrong, change it he
 - Tauri event names (`terax:settings-tab`, `terax:ai-attach-file`, `terax:agent-signal`) — backend/frontend contract.
 - Shell-integration surface: `TERAX_TERMINAL` / `TERAX_BLOCKS` / `TERAX_USER_ZDOTDIR` env vars, `~/.cache/terax`, and the `notify;Terax;` PTY markers — a wire protocol baked into installed shell hooks.
 - Updater endpoint, repo URL (`crynta/terax-ai`), and website (`terax.app`) — real infrastructure. Pointing them at non-existent Ken IDE infra would break auto-update. The About panel keeps these links until Ken IDE infra exists; see Task 3's note.
+- Deb/rpm install-command filename templates (`UpdaterDialog.tsx:22,24`, e.g. `Terax_${version}_amd64.deb`) — these must match the actual Tauri bundle artifact name, which can only be confirmed by a real `pnpm tauri build`. Because the new `productName` "Ken IDE" contains a space (which affects artifact naming / shell-command quoting), this needs a deliberate fix, not a blind rename. See Known Follow-ups.
+- `.terax-theme` theme file extension and the `readTeraxMd` / `TERAX.md` project-memory convention — file-format / file-name identifiers. Renaming them orphans existing exported themes and per-project memory files; treated like the storage keys above.
 
 ---
 
@@ -318,6 +324,18 @@ git commit -m "chore(rebrand): verification fixes for Ken IDE rebrand"
 ```
 
 ---
+
+### Task 5: Rebrand remaining user-facing strings (AI assistant, updater, settings) — folded in during execution
+
+**Files modified:** `src/modules/ai/config.ts` (SYSTEM_PROMPT + SYSTEM_PROMPT_LITE openings → "You are Ken, an AI agent … in Ken IDE"), `src/modules/ai/components/{SelectionAskAi,AiChat,AiMiniWindow,AiComposerInput,LocalAgentNotificationsBridge}.tsx` ("Ask Ken", notification titles, `AGENT = "Ken"`), `src/modules/agents/components/NotificationBell.tsx`, `src/modules/agents/lib/agentIcon.tsx` (logo branch now matches "ken" too — fixes a regression where the renamed agent lost its logo), `src/settings/sections/{GeneralSection,ModelsSection,AgentsSection}.tsx` (→ "Ken IDE" / "Ken"), `src/modules/updater/UpdaterDialog.tsx` (dialog copy → "Ken IDE", filenames left), `src/modules/ai/lib/agent.ts` (`X-Title` → "Ken IDE").
+
+**Verification:** `pnpm check-types` clean, `pnpm test` 158/158, and a tree-wide `grep 'Terax' src` leaves only the four intentionally-kept matches (the two deb/rpm filename templates + the two `readTeraxMd`/`TERAX.md` references).
+
+## Known Follow-ups (out of this branch)
+
+1. **Updater deb/rpm install-command filenames** (`UpdaterDialog.tsx:22,24`): rebrand once the real Tauri bundle artifact name is confirmed via `pnpm tauri build`. The space in `productName` "Ken IDE" likely warrants a dedicated bundle/artifact name (or quoting) so the generated `apt`/`dnf` commands are valid.
+2. **External infra**: updater endpoint, GitHub repo (`crynta/terax-ai`), website (`terax.app`), and the About-panel link labels — update when Ken IDE infrastructure exists.
+3. **Kept format identifiers**: `.terax-theme` extension and `TERAX.md` convention — rename only with a migration story.
 
 ## Self-Review
 

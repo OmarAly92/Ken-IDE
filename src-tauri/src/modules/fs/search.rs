@@ -126,25 +126,31 @@ pub fn fs_search(
 /// Fuzzy-rank candidates against the query (path-aware, smart-case), keeping
 /// the top `cap`. Ties break toward shorter relative paths.
 fn rank_fuzzy(cands: Vec<SearchHit>, query: &str, cap: usize) -> Vec<SearchHit> {
+    let keys: Vec<&str> = cands.iter().map(|c| c.rel.as_str()).collect();
+    let order = fuzzy_rank(query, &keys, cap);
+    order.into_iter().map(|i| cands[i].clone()).collect()
+}
+
+/// Pure fuzzy ranker: scores each key in `keys` against `query` and returns the
+/// indices of the top `cap` matches, best first. Path-aware, smart-case; ties
+/// break toward shorter keys. This is the canonical fuzzy match shared by file
+/// search and (later) Search Everywhere — keep all fuzzy ranking routed here.
+pub fn fuzzy_rank(query: &str, keys: &[&str], cap: usize) -> Vec<usize> {
     let mut matcher = Matcher::new(Config::DEFAULT.match_paths());
     let pattern = Pattern::parse(query, CaseMatching::Smart, Normalization::Smart);
     let mut buf = Vec::new();
 
-    let mut scored = Vec::with_capacity(cands.len());
-    for (i, c) in cands.iter().enumerate() {
-        if let Some(s) = pattern.score(Utf32Str::new(&c.rel, &mut buf), &mut matcher) {
+    let mut scored: Vec<(u32, usize)> = Vec::with_capacity(keys.len());
+    for (i, key) in keys.iter().enumerate() {
+        if let Some(s) = pattern.score(Utf32Str::new(key, &mut buf), &mut matcher) {
             scored.push((s, i));
         }
     }
     scored.sort_by(|a, b| {
         b.0.cmp(&a.0)
-            .then_with(|| cands[a.1].rel.len().cmp(&cands[b.1].rel.len()))
+            .then_with(|| keys[a.1].len().cmp(&keys[b.1].len()))
     });
-    scored
-        .into_iter()
-        .take(cap)
-        .map(|(_, i)| cands[i].clone())
-        .collect()
+    scored.into_iter().take(cap).map(|(_, i)| i).collect()
 }
 
 #[derive(Serialize)]
@@ -280,5 +286,60 @@ mod tests {
         let out = rank_fuzzy(cands, "cmdp", 10);
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].rel, "CommandPalette.tsx");
+    }
+
+    #[test]
+    fn ranks_matches_and_excludes_non_matches() {
+        let keys = [
+            "src/app.tsx",
+            "src/components/AppBar.tsx",
+            "src/main.rs",
+            "README.md",
+        ];
+        let ranked = fuzzy_rank("app", &keys, 10);
+
+        assert!(ranked.contains(&0), "app.tsx should match");
+        assert!(ranked.contains(&1), "AppBar.tsx should match");
+        assert!(!ranked.contains(&2), "main.rs should not match");
+        assert!(!ranked.contains(&3), "README.md should not match");
+        assert_eq!(ranked.first(), Some(&0), "shorter match ranks first");
+    }
+
+    #[test]
+    fn contiguous_beats_gapped() {
+        let keys = ["x_a_b_c.rs", "abc.rs"];
+        let ranked = fuzzy_rank("abc", &keys, 10);
+        assert_eq!(ranked.first(), Some(&1), "contiguous match ranks first");
+    }
+
+    #[test]
+    fn respects_cap() {
+        let keys = ["aaa.rs", "aab.rs", "aac.rs", "aad.rs"];
+        let ranked = fuzzy_rank("a", &keys, 2);
+        assert_eq!(ranked.len(), 2);
+    }
+
+    #[test]
+    fn stays_within_regression_tripwire() {
+        // 10k synthetic paths that all contain "component".
+        let keys: Vec<String> = (0..10_000)
+            .map(|i| format!("src/module_{i}/component_{i}.tsx"))
+            .collect();
+        let refs: Vec<&str> = keys.iter().map(String::as_str).collect();
+
+        let start = std::time::Instant::now();
+        let out = fuzzy_rank("comp", &refs, 200);
+        let elapsed = start.elapsed();
+
+        // Every key matches "comp", so the cap is hit exactly.
+        assert_eq!(out.len(), 200);
+        // Coarse tripwire: debug build on shared CI runners catches O(n^2)
+        // blowups, NOT the product SLA. Precise latency lives in the criterion
+        // bench (Task 3). 500ms is deliberately generous.
+        assert!(
+            elapsed.as_millis() < 500,
+            "fuzzy_rank over 10k took {}ms (tripwire 500ms)",
+            elapsed.as_millis()
+        );
     }
 }

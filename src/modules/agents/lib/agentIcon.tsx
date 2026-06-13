@@ -22,7 +22,8 @@ export function AgentIcon({
   size?: number;
   className?: string;
 }) {
-  if (agent.toLowerCase().includes("terax")) {
+  const a = agent.toLowerCase();
+  if (a.includes("terax") || a.includes("ken")) {
     return (
       <img
         src="/logo.png"

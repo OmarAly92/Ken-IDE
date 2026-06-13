@@ -11,8 +11,8 @@ export type SymbolKind =
 export interface FileSymbol {
   name: string;
   kind: SymbolKind;
-  start_line: number;
-  end_line: number;
+  startLine: number;
+  endLine: number;
 }
 
 export function listFileSymbols(path: string): Promise<FileSymbol[]> {

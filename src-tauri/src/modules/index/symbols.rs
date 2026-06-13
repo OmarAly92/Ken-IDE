@@ -13,6 +13,7 @@ pub enum SymbolKind {
 }
 
 #[derive(Serialize, Clone, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub struct Symbol {
     pub name: String,
     pub kind: SymbolKind,

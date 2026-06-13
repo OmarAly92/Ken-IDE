@@ -3,7 +3,16 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { findLeafCwd } from "@/modules/terminal/lib/panes";
 import type { Tab } from "./useTabs";
 
-const APP_NAME = "Terax";
+export const APP_NAME = "Ken IDE";
+
+export function computeWindowTitle(
+  project: string,
+  label: string,
+  appName: string = APP_NAME,
+): string {
+  if (project && label && label !== project) return `${project} — ${label}`;
+  return project || label || appName;
+}
 
 function basename(path: string): string {
   const parts = path.split(/[\\/]/).filter(Boolean);
@@ -25,7 +34,7 @@ function tabLabel(tab: Tab | undefined): string {
  * Spotify shows the current track instead of just the app name. Without this
  * the window keeps the build-time default ("Tauri App" on Linux).
  *
- * Format: `<project> — <tab>` (e.g. `terax-ai — src`), collapsing to just the
+ * Format: `<project> — <tab>` (e.g. `ken-ide — src`), collapsing to just the
  * project when the focused terminal sits at the project root. Falls back to the
  * app name when there's nothing to show.
  */
@@ -37,9 +46,7 @@ export function useWindowTitle(
   const label = tabLabel(activeTab);
 
   useEffect(() => {
-    let title: string;
-    if (project && label && label !== project) title = `${project} — ${label}`;
-    else title = project || label || APP_NAME;
+    const title = computeWindowTitle(project, label);
 
     document.title = title;
     void getCurrentWindow()

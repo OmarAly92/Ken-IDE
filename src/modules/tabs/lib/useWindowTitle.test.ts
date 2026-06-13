@@ -4,7 +4,14 @@ import { APP_NAME, computeWindowTitle } from "./useWindowTitle";
 describe("computeWindowTitle", () => {
   it("falls back to the app name when nothing else is available", () => {
     expect(computeWindowTitle("", "")).toBe("Ken IDE");
+  });
+
+  it("APP_NAME is the Ken IDE brand string", () => {
     expect(APP_NAME).toBe("Ken IDE");
+  });
+
+  it("uses an injected app name for the fallback", () => {
+    expect(computeWindowTitle("", "", "Custom")).toBe("Custom");
   });
 
   it("shows the project alone when the tab label equals the project", () => {

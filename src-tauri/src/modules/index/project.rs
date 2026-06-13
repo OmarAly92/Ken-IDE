@@ -1,10 +1,17 @@
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
+use std::sync::mpsc::{self, RecvTimeoutError};
+use std::sync::Mutex;
+use std::time::{Duration, Instant};
 
 use ignore::WalkBuilder;
+use notify::{Config, Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
+use tauri::{AppHandle, Emitter, Manager, State};
 
 use crate::modules::fs::to_canon;
-use crate::modules::index::store::IndexStore;
+use crate::modules::index::store::{IndexStatus, IndexStore, SymbolHit};
 use crate::modules::index::symbols::extract_symbols;
+use crate::modules::workspace::WorkspaceRegistry;
 
 const PRUNE_DIRS: &[&str] = &[
     "node_modules",
@@ -59,6 +66,157 @@ pub fn run_index(root: &Path, store: &IndexStore, mut on_progress: impl FnMut(us
         }
         on_progress(i + 1, total);
     }
+}
+
+const DEBOUNCE: Duration = Duration::from_millis(150);
+const MAX_WINDOW: Duration = Duration::from_millis(1000);
+
+pub fn apply_change(store: &IndexStore, path: &Path) {
+    if !is_indexable(path) {
+        return;
+    }
+    let key = to_canon(path);
+    match std::fs::read_to_string(path) {
+        Ok(src) => store.replace_file(key, extract_symbols(&src)),
+        Err(_) => store.remove_file(&key),
+    }
+}
+
+#[derive(Default)]
+pub struct IndexWatchState {
+    inner: Mutex<Option<RecommendedWatcher>>,
+}
+
+#[derive(Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ProgressPayload {
+    indexed: usize,
+    total: usize,
+}
+
+#[derive(Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct UpdatedPayload {
+    paths: Vec<String>,
+}
+
+fn collect(set: &mut HashSet<PathBuf>, ev: notify::Result<Event>) {
+    let Ok(ev) = ev else { return };
+    if matches!(ev.kind, EventKind::Access(_)) {
+        return;
+    }
+    for p in ev.paths {
+        set.insert(p);
+    }
+}
+
+fn watch_drain(rx: mpsc::Receiver<notify::Result<Event>>, app: AppHandle) {
+    loop {
+        let first = match rx.recv() {
+            Ok(ev) => ev,
+            Err(_) => return,
+        };
+        let mut paths: HashSet<PathBuf> = HashSet::new();
+        collect(&mut paths, first);
+
+        let deadline = Instant::now() + MAX_WINDOW;
+        loop {
+            let timeout = DEBOUNCE.min(deadline.saturating_duration_since(Instant::now()));
+            match rx.recv_timeout(timeout) {
+                Ok(ev) => collect(&mut paths, ev),
+                Err(RecvTimeoutError::Timeout) => break,
+                Err(RecvTimeoutError::Disconnected) => return,
+            }
+            if Instant::now() >= deadline {
+                break;
+            }
+        }
+
+        let store = app.state::<IndexStore>();
+        let mut changed: Vec<String> = Vec::new();
+        for path in paths {
+            if is_indexable(&path) {
+                apply_change(&store, &path);
+                changed.push(to_canon(&path));
+            }
+        }
+        if !changed.is_empty() {
+            let _ = app.emit("index:updated", UpdatedPayload { paths: changed });
+        }
+    }
+}
+
+fn start_watch(state: &IndexWatchState, app: &AppHandle, root: &Path) -> Result<(), String> {
+    let (tx, rx) = mpsc::channel::<notify::Result<Event>>();
+    let mut watcher = RecommendedWatcher::new(
+        move |res| {
+            let _ = tx.send(res);
+        },
+        Config::default(),
+    )
+    .map_err(|e| e.to_string())?;
+    watcher
+        .watch(root, RecursiveMode::Recursive)
+        .map_err(|e| e.to_string())?;
+
+    let app_for_thread = app.clone();
+    std::thread::Builder::new()
+        .name("ken-index-watch".into())
+        .spawn(move || watch_drain(rx, app_for_thread))
+        .map_err(|e| e.to_string())?;
+
+    *state.inner.lock().expect("index watch poisoned") = Some(watcher);
+    Ok(())
+}
+
+#[tauri::command]
+pub fn index_project(
+    root: String,
+    app: AppHandle,
+    store: State<'_, IndexStore>,
+    watch: State<'_, IndexWatchState>,
+    registry: State<'_, WorkspaceRegistry>,
+) -> Result<(), String> {
+    let root_path = registry.authorize(&root).map_err(|e| e.to_string())?;
+    if !root_path.is_dir() {
+        return Err(format!("not a directory: {root}"));
+    }
+    store.clear();
+    store.set_root(Some(to_canon(&root_path)));
+    start_watch(&watch, &app, &root_path)?;
+
+    let app_for_thread = app.clone();
+    std::thread::Builder::new()
+        .name("ken-index-build".into())
+        .spawn(move || {
+            let store = app_for_thread.state::<IndexStore>();
+            let mut last_emit = 0usize;
+            run_index(&root_path, &store, |indexed, total| {
+                if indexed == total || indexed - last_emit >= 50 {
+                    last_emit = indexed;
+                    let _ = app_for_thread
+                        .emit("index:progress", ProgressPayload { indexed, total });
+                }
+            });
+            let status = store.status();
+            let _ = app_for_thread.emit("index:done", status);
+        })
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn query_symbols(
+    query: String,
+    limit: Option<usize>,
+    store: State<'_, IndexStore>,
+) -> Vec<SymbolHit> {
+    store.query(&query, limit.unwrap_or(50).min(500))
+}
+
+#[tauri::command]
+pub fn index_status(store: State<'_, IndexStore>) -> IndexStatus {
+    store.status()
 }
 
 #[cfg(test)]
@@ -119,5 +277,32 @@ mod tests {
         assert_eq!(progress.last(), Some(&(2, 2)));
         assert_eq!(store.query("greet", 10).len(), 1);
         assert_eq!(store.query("Repo", 10).len(), 1);
+    }
+
+    #[test]
+    fn apply_change_upserts_and_removes() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let file = root.join("a.ts");
+        fs::write(&file, "function one() {}\n").unwrap();
+
+        let store = IndexStore::default();
+        apply_change(&store, &file);
+        assert_eq!(store.query("one", 10).len(), 1);
+
+        fs::write(&file, "function two() {}\n").unwrap();
+        apply_change(&store, &file);
+        assert!(store.query("one", 10).is_empty());
+        assert_eq!(store.query("two", 10).len(), 1);
+
+        fs::remove_file(&file).unwrap();
+        apply_change(&store, &file);
+        assert!(store.query("two", 10).is_empty());
+
+        let ignored = root.join("note.txt");
+        fs::write(&ignored, "hello").unwrap();
+        let before = store.status().file_count;
+        apply_change(&store, &ignored);
+        assert_eq!(store.status().file_count, before);
     }
 }

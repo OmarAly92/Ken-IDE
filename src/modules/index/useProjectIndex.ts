@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 import {
   indexProject,
   listenIndexDone,
@@ -38,8 +38,20 @@ export function useProjectIndex(root: string | null): void {
     };
   }, [setProgress, setReady]);
 
+  const indexedRootRef = useRef<string | null>(null);
+
   useEffect(() => {
     if (!root) return;
+    const current = indexedRootRef.current;
+    const prefix = current
+      ? current.endsWith("/")
+        ? current
+        : `${current}/`
+      : null;
+    if (current && (root === current || (prefix !== null && root.startsWith(prefix)))) {
+      return;
+    }
+    indexedRootRef.current = root;
     startIndexing();
     void indexProject(root).catch(() => {});
   }, [root, startIndexing]);

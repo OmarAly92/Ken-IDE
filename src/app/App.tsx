@@ -1106,6 +1106,7 @@ export default function App() {
           {!zenMode && (
             <StatusBar
               cwd={activeCwd}
+              workspaceRoot={explorerRoot}
               filePath={activeFilePath}
               home={home}
               onCd={sendCd}

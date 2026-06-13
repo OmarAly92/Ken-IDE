@@ -18,6 +18,7 @@ import type { WorkspaceEnv } from "@/modules/workspace";
 
 type Props = {
   cwd: string | null;
+  workspaceRoot: string | null;
   filePath?: string | null;
   home: string | null;
   onCd: (path: string) => void;
@@ -30,6 +31,7 @@ type Props = {
 
 export function StatusBar({
   cwd,
+  workspaceRoot,
   filePath,
   home,
   onCd,
@@ -40,7 +42,7 @@ export function StatusBar({
 }: Props) {
   const panelOpen = useChatStore((s) => s.panelOpen);
   const openPanel = useChatStore((s) => s.openPanel);
-  useProjectIndex(cwd);
+  useProjectIndex(workspaceRoot);
 
   return (
     <footer className="flex h-8 shrink-0 items-center justify-between gap-3 border-t border-border/60 bg-card/60 px-3 text-[11px]">

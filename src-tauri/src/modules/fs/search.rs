@@ -318,4 +318,28 @@ mod tests {
         let ranked = fuzzy_rank("a", &keys, 2);
         assert_eq!(ranked.len(), 2);
     }
+
+    #[test]
+    fn stays_within_regression_tripwire() {
+        // 10k synthetic paths that all contain "component".
+        let keys: Vec<String> = (0..10_000)
+            .map(|i| format!("src/module_{i}/component_{i}.tsx"))
+            .collect();
+        let refs: Vec<&str> = keys.iter().map(String::as_str).collect();
+
+        let start = std::time::Instant::now();
+        let out = fuzzy_rank("comp", &refs, 200);
+        let elapsed = start.elapsed();
+
+        // Every key matches "comp", so the cap is hit exactly.
+        assert_eq!(out.len(), 200);
+        // Coarse tripwire: debug build on shared CI runners catches O(n^2)
+        // blowups, NOT the product SLA. Precise latency lives in the criterion
+        // bench (Task 3). 500ms is deliberately generous.
+        assert!(
+            elapsed.as_millis() < 500,
+            "fuzzy_rank over 10k took {}ms (tripwire 500ms)",
+            elapsed.as_millis()
+        );
+    }
 }

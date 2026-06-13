@@ -156,7 +156,7 @@ export async function buildLanguageModel(
         apiKey: key,
         headers: {
           "HTTP-Referer": "https://terax.ai",
-          "X-Title": "Terax",
+          "X-Title": "Ken IDE",
         },
       })(resolvedModelId);
       break;

@@ -4,7 +4,7 @@
     "windows": [
       {
         "label": "main",
-        "title": "Terax",
+        "title": "Ken IDE",
         "decorations": false,
         "transparent": true,
         "visible": false,

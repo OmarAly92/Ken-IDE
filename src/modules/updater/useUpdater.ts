@@ -9,6 +9,8 @@ const CHECK_INTERVAL_MS = 30 * 60 * 1000;
 const GITHUB_LATEST_RELEASE =
   "https://api.github.com/repos/crynta/terax-ai/releases/latest";
 
+export const UPDATER_ENABLED = false;
+
 export interface ManualUpdateInfo {
   version: string;
   currentVersion: string;
@@ -85,6 +87,7 @@ export function useUpdater({ autoCheck = true }: HookOptions = {}) {
   const [status, setStatus] = useState<UpdaterStatus>({ kind: "idle" });
 
   const runCheck = useCallback(async ({ manual }: Options = {}) => {
+    if (!UPDATER_ENABLED) return;
     if (!manual) {
       const last = Number(localStorage.getItem(LAST_CHECK_KEY) ?? 0);
       if (Date.now() - last < CHECK_INTERVAL_MS) return;
@@ -146,7 +149,7 @@ export function useUpdater({ autoCheck = true }: HookOptions = {}) {
   }, []);
 
   useEffect(() => {
-    if (!autoCheck) return;
+    if (!autoCheck || !UPDATER_ENABLED) return;
     void runCheck();
   }, [autoCheck, runCheck]);
 

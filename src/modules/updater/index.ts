@@ -1,2 +1,2 @@
 export { UpdaterDialog } from "./UpdaterDialog";
-export { useUpdater } from "./useUpdater";
+export { useUpdater, UPDATER_ENABLED } from "./useUpdater";

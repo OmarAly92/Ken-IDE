@@ -256,42 +256,6 @@ fn display_path(
 }
 
 #[cfg(test)]
-mod new_tests {
-    use super::fuzzy_rank;
-
-    #[test]
-    fn ranks_matches_and_excludes_non_matches() {
-        let keys = [
-            "src/app.tsx",
-            "src/components/AppBar.tsx",
-            "src/main.rs",
-            "README.md",
-        ];
-        let ranked = fuzzy_rank("app", &keys, 10);
-
-        assert!(ranked.contains(&0), "app.tsx should match");
-        assert!(ranked.contains(&1), "AppBar.tsx should match");
-        assert!(!ranked.contains(&2), "main.rs should not match");
-        assert!(!ranked.contains(&3), "README.md should not match");
-        assert_eq!(ranked.first(), Some(&0), "shorter match ranks first");
-    }
-
-    #[test]
-    fn contiguous_beats_gapped() {
-        let keys = ["x_a_b_c.rs", "abc.rs"];
-        let ranked = fuzzy_rank("abc", &keys, 10);
-        assert_eq!(ranked.first(), Some(&1), "contiguous match ranks first");
-    }
-
-    #[test]
-    fn respects_cap() {
-        let keys = ["aaa.rs", "aab.rs", "aac.rs", "aad.rs"];
-        let ranked = fuzzy_rank("a", &keys, 2);
-        assert_eq!(ranked.len(), 2);
-    }
-}
-
-#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -322,5 +286,36 @@ mod tests {
         let out = rank_fuzzy(cands, "cmdp", 10);
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].rel, "CommandPalette.tsx");
+    }
+
+    #[test]
+    fn ranks_matches_and_excludes_non_matches() {
+        let keys = [
+            "src/app.tsx",
+            "src/components/AppBar.tsx",
+            "src/main.rs",
+            "README.md",
+        ];
+        let ranked = fuzzy_rank("app", &keys, 10);
+
+        assert!(ranked.contains(&0), "app.tsx should match");
+        assert!(ranked.contains(&1), "AppBar.tsx should match");
+        assert!(!ranked.contains(&2), "main.rs should not match");
+        assert!(!ranked.contains(&3), "README.md should not match");
+        assert_eq!(ranked.first(), Some(&0), "shorter match ranks first");
+    }
+
+    #[test]
+    fn contiguous_beats_gapped() {
+        let keys = ["x_a_b_c.rs", "abc.rs"];
+        let ranked = fuzzy_rank("abc", &keys, 10);
+        assert_eq!(ranked.first(), Some(&1), "contiguous match ranks first");
+    }
+
+    #[test]
+    fn respects_cap() {
+        let keys = ["aaa.rs", "aab.rs", "aac.rs", "aad.rs"];
+        let ranked = fuzzy_rank("a", &keys, 2);
+        assert_eq!(ranked.len(), 2);
     }
 }

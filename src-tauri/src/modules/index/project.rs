@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, RecvTimeoutError};
 use std::sync::Mutex;
@@ -9,6 +9,7 @@ use notify::{Config, Event, EventKind, RecommendedWatcher, RecursiveMode, Watche
 use tauri::{AppHandle, Emitter, Manager, State};
 
 use crate::modules::fs::to_canon;
+use crate::modules::index::persist::{self, PersistedIndex};
 use crate::modules::index::store::{IndexStatus, IndexStore, SymbolHit};
 use crate::modules::index::symbols::extract_symbols;
 use crate::modules::workspace::WorkspaceRegistry;
@@ -31,6 +32,12 @@ pub fn is_indexable(path: &Path) -> bool {
         path.extension().and_then(|e| e.to_str()),
         Some("ts") | Some("mts") | Some("cts")
     )
+}
+
+pub fn file_mtime_ms(path: &Path) -> Option<u64> {
+    let modified = std::fs::metadata(path).ok()?.modified().ok()?;
+    let dur = modified.duration_since(std::time::UNIX_EPOCH).ok()?;
+    Some(dur.as_millis() as u64)
 }
 
 pub fn collect_indexable_files(root: &Path) -> Vec<PathBuf> {
@@ -62,10 +69,64 @@ pub fn run_index(root: &Path, store: &IndexStore, mut on_progress: impl FnMut(us
     let total = files.len();
     for (i, path) in files.iter().enumerate() {
         if let Ok(src) = std::fs::read_to_string(path) {
-            store.replace_file(to_canon(path), extract_symbols(&src));
+            store.replace_file(to_canon(path), file_mtime_ms(path).unwrap_or(0), extract_symbols(&src));
         }
         on_progress(i + 1, total);
     }
+}
+
+pub fn reconcile(
+    root: &Path,
+    loaded: PersistedIndex,
+    store: &IndexStore,
+    mut on_progress: impl FnMut(usize, usize),
+) {
+    let mut cached: HashMap<String, crate::modules::index::persist::PersistedFile> = loaded
+        .files
+        .into_iter()
+        .map(|f| (f.path.clone(), f))
+        .collect();
+    let files = collect_indexable_files(root);
+    let total = files.len();
+    for (i, path) in files.iter().enumerate() {
+        let key = to_canon(path);
+        let current = file_mtime_ms(path).unwrap_or(u64::MAX);
+        match cached.remove(&key) {
+            Some(entry) if entry.mtime_ms >= current => {
+                store.replace_file(key, entry.mtime_ms, entry.symbols);
+            }
+            _ => {
+                if let Ok(src) = std::fs::read_to_string(path) {
+                    store.replace_file(key, current, extract_symbols(&src));
+                }
+            }
+        }
+        on_progress(i + 1, total);
+    }
+}
+
+pub fn load_or_index(
+    root: &Path,
+    cache_path: &Path,
+    store: &IndexStore,
+    on_progress: impl FnMut(usize, usize),
+) {
+    let canon = to_canon(root);
+    match persist::load(cache_path) {
+        Some(loaded) if loaded.root == canon => reconcile(root, loaded, store, on_progress),
+        _ => run_index(root, store, on_progress),
+    }
+    let _ = persist::save(cache_path, &store.snapshot());
+}
+
+fn cache_path_for(app: &AppHandle, canonical_root: &str) -> Option<std::path::PathBuf> {
+    let base = app.path().app_cache_dir().ok()?;
+    let hash = crc32fast::hash(canonical_root.as_bytes());
+    let name = Path::new(canonical_root)
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("root");
+    Some(base.join("index").join(format!("{name}-{hash:08x}.kenidx")))
 }
 
 const DEBOUNCE: Duration = Duration::from_millis(150);
@@ -77,7 +138,7 @@ pub fn apply_change(store: &IndexStore, path: &Path) {
     }
     let key = to_canon(path);
     match std::fs::read_to_string(path) {
-        Ok(src) => store.replace_file(key, extract_symbols(&src)),
+        Ok(src) => store.replace_file(key, file_mtime_ms(path).unwrap_or(0), extract_symbols(&src)),
         Err(_) => store.remove_file(&key),
     }
 }
@@ -142,6 +203,11 @@ fn watch_drain(rx: mpsc::Receiver<notify::Result<Event>>, app: AppHandle) {
         }
         if !changed.is_empty() {
             let _ = app.emit("index:updated", UpdatedPayload { paths: changed });
+            if let Some(root) = store.status().root {
+                if let Some(p) = cache_path_for(&app, &root) {
+                    let _ = persist::save(&p, &store.snapshot());
+                }
+            }
         }
     }
 }
@@ -182,22 +248,28 @@ pub fn index_project(
         return Err(format!("not a directory: {root}"));
     }
     store.clear();
-    store.set_root(Some(to_canon(&root_path)));
+    let canon_root = to_canon(&root_path);
+    store.set_root(Some(canon_root.clone()));
     start_watch(&watch, &app, &root_path)?;
 
+    let cache_path = cache_path_for(&app, &canon_root);
     let app_for_thread = app.clone();
     std::thread::Builder::new()
         .name("ken-index-build".into())
         .spawn(move || {
             let store = app_for_thread.state::<IndexStore>();
             let mut last_emit = 0usize;
-            run_index(&root_path, &store, |indexed, total| {
+            let on_progress = |indexed: usize, total: usize| {
                 if indexed == total || indexed - last_emit >= 50 {
                     last_emit = indexed;
                     let _ = app_for_thread
                         .emit("index:progress", ProgressPayload { indexed, total });
                 }
-            });
+            };
+            match &cache_path {
+                Some(p) => load_or_index(&root_path, p, &store, on_progress),
+                None => run_index(&root_path, &store, on_progress),
+            }
             let status = store.status();
             let _ = app_for_thread.emit("index:done", status);
         })
@@ -277,6 +349,70 @@ mod tests {
         assert_eq!(progress.last(), Some(&(2, 2)));
         assert_eq!(store.query("greet", 10).len(), 1);
         assert_eq!(store.query("Repo", 10).len(), 1);
+    }
+
+    #[test]
+    fn reconcile_keeps_unchanged_reparses_changed_adds_new_drops_deleted() {
+        use crate::modules::index::persist::{PersistedFile, PersistedIndex};
+        use crate::modules::index::symbols::{Symbol, SymbolKind};
+
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        write(root, "keep.ts", "function realKeep() {}\n");
+        write(root, "change.ts", "function before() {}\n");
+        write(root, "new.ts", "function fresh() {}\n");
+
+        let keep_mtime = file_mtime_ms(&root.join("keep.ts")).unwrap();
+
+        let loaded = PersistedIndex {
+            version: 1,
+            root: to_canon(root),
+            files: vec![
+                PersistedFile {
+                    path: to_canon(&root.join("keep.ts")),
+                    mtime_ms: keep_mtime,
+                    symbols: vec![Symbol {
+                        name: "SENTINEL_FROM_CACHE".to_string(),
+                        kind: SymbolKind::Function,
+                        start_line: 1,
+                        end_line: 1,
+                    }],
+                },
+                PersistedFile {
+                    path: to_canon(&root.join("change.ts")),
+                    mtime_ms: 0,
+                    symbols: vec![Symbol {
+                        name: "before".to_string(),
+                        kind: SymbolKind::Function,
+                        start_line: 1,
+                        end_line: 1,
+                    }],
+                },
+                PersistedFile {
+                    path: to_canon(&root.join("gone.ts")),
+                    mtime_ms: 0,
+                    symbols: vec![Symbol {
+                        name: "deleted".to_string(),
+                        kind: SymbolKind::Function,
+                        start_line: 1,
+                        end_line: 1,
+                    }],
+                },
+            ],
+        };
+
+        write(root, "change.ts", "function after() {}\n");
+
+        let store = IndexStore::default();
+        reconcile(root, loaded, &store, |_done, _total| {});
+
+        assert_eq!(store.query("SENTINEL_FROM_CACHE", 10).len(), 1);
+        assert!(store.query("realKeep", 10).is_empty());
+        assert_eq!(store.query("after", 10).len(), 1);
+        assert!(store.query("before", 10).is_empty());
+        assert_eq!(store.query("fresh", 10).len(), 1);
+        assert!(store.query("deleted", 10).is_empty());
+        assert_eq!(store.status().file_count, 3);
     }
 
     #[test]

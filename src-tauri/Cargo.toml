@@ -62,6 +62,10 @@ criterion = "0.5"
 name = "search_bench"
 harness = false
 
+[[bench]]
+name = "persist_bench"
+harness = false
+
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 

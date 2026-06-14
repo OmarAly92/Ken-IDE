@@ -119,6 +119,16 @@ pub fn load_or_index(
     let _ = persist::save(cache_path, &store.snapshot());
 }
 
+fn cache_path_for(app: &AppHandle, canonical_root: &str) -> Option<std::path::PathBuf> {
+    let base = app.path().app_cache_dir().ok()?;
+    let hash = crc32fast::hash(canonical_root.as_bytes());
+    let name = Path::new(canonical_root)
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("root");
+    Some(base.join("index").join(format!("{name}-{hash:08x}.kenidx")))
+}
+
 const DEBOUNCE: Duration = Duration::from_millis(150);
 const MAX_WINDOW: Duration = Duration::from_millis(1000);
 
@@ -193,6 +203,11 @@ fn watch_drain(rx: mpsc::Receiver<notify::Result<Event>>, app: AppHandle) {
         }
         if !changed.is_empty() {
             let _ = app.emit("index:updated", UpdatedPayload { paths: changed });
+            if let Some(root) = store.status().root {
+                if let Some(p) = cache_path_for(&app, &root) {
+                    let _ = persist::save(&p, &store.snapshot());
+                }
+            }
         }
     }
 }
@@ -233,22 +248,28 @@ pub fn index_project(
         return Err(format!("not a directory: {root}"));
     }
     store.clear();
-    store.set_root(Some(to_canon(&root_path)));
+    let canon_root = to_canon(&root_path);
+    store.set_root(Some(canon_root.clone()));
     start_watch(&watch, &app, &root_path)?;
 
+    let cache_path = cache_path_for(&app, &canon_root);
     let app_for_thread = app.clone();
     std::thread::Builder::new()
         .name("ken-index-build".into())
         .spawn(move || {
             let store = app_for_thread.state::<IndexStore>();
             let mut last_emit = 0usize;
-            run_index(&root_path, &store, |indexed, total| {
+            let on_progress = |indexed: usize, total: usize| {
                 if indexed == total || indexed - last_emit >= 50 {
                     last_emit = indexed;
                     let _ = app_for_thread
                         .emit("index:progress", ProgressPayload { indexed, total });
                 }
-            });
+            };
+            match &cache_path {
+                Some(p) => load_or_index(&root_path, p, &store, on_progress),
+                None => run_index(&root_path, &store, on_progress),
+            }
             let status = store.status();
             let _ = app_for_thread.emit("index:done", status);
         })

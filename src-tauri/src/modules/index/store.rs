@@ -4,6 +4,7 @@ use std::sync::Mutex;
 use serde::Serialize;
 
 use crate::modules::fs::search::fuzzy_rank;
+use crate::modules::index::persist::{PersistedFile, PersistedIndex};
 use crate::modules::index::symbols::{Symbol, SymbolKind};
 
 #[derive(Serialize, Clone, Debug, PartialEq, Eq)]
@@ -24,10 +25,16 @@ pub struct IndexStatus {
     pub symbol_count: usize,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct FileEntry {
+    mtime_ms: u64,
+    symbols: Vec<Symbol>,
+}
+
 #[derive(Default)]
 struct IndexData {
     root: Option<String>,
-    files: BTreeMap<String, Vec<Symbol>>,
+    files: BTreeMap<String, FileEntry>,
 }
 
 #[derive(Default)]
@@ -46,12 +53,12 @@ impl IndexStore {
         self.inner.lock().expect("index store poisoned").root = root;
     }
 
-    pub fn replace_file(&self, path: String, symbols: Vec<Symbol>) {
+    pub fn replace_file(&self, path: String, mtime_ms: u64, symbols: Vec<Symbol>) {
         self.inner
             .lock()
             .expect("index store poisoned")
             .files
-            .insert(path, symbols);
+            .insert(path, FileEntry { mtime_ms, symbols });
     }
 
     pub fn remove_file(&self, path: &str) {
@@ -67,15 +74,15 @@ impl IndexStore {
         IndexStatus {
             root: data.root.clone(),
             file_count: data.files.len(),
-            symbol_count: data.files.values().map(|v| v.len()).sum(),
+            symbol_count: data.files.values().map(|e| e.symbols.len()).sum(),
         }
     }
 
     pub fn query(&self, query: &str, limit: usize) -> Vec<SymbolHit> {
         let data = self.inner.lock().expect("index store poisoned");
         let mut entries: Vec<(&str, &Symbol)> = Vec::new();
-        for (path, syms) in data.files.iter() {
-            for s in syms {
+        for (path, entry) in data.files.iter() {
+            for s in &entry.symbols {
                 entries.push((path.as_str(), s));
             }
         }
@@ -94,6 +101,46 @@ impl IndexStore {
             .into_iter()
             .map(|i| make(entries[i]))
             .collect()
+    }
+
+    pub fn snapshot(&self) -> PersistedIndex {
+        let data = self.inner.lock().expect("index store poisoned");
+        let files = data
+            .files
+            .iter()
+            .map(|(path, entry)| PersistedFile {
+                path: path.clone(),
+                mtime_ms: entry.mtime_ms,
+                symbols: entry.symbols.clone(),
+            })
+            .collect();
+        PersistedIndex {
+            version: 1,
+            root: data.root.clone().unwrap_or_default(),
+            files,
+        }
+    }
+
+    pub fn load_snapshot(&self, index: PersistedIndex) {
+        let mut data = self.inner.lock().expect("index store poisoned");
+        data.root = if index.root.is_empty() {
+            None
+        } else {
+            Some(index.root)
+        };
+        data.files = index
+            .files
+            .into_iter()
+            .map(|f| {
+                (
+                    f.path,
+                    FileEntry {
+                        mtime_ms: f.mtime_ms,
+                        symbols: f.symbols,
+                    },
+                )
+            })
+            .collect();
     }
 }
 
@@ -123,7 +170,7 @@ mod tests {
     #[test]
     fn replace_file_then_query_finds_symbol() {
         let store = IndexStore::default();
-        store.replace_file("a.ts".to_string(), vec![sym("greet", 1), sym("run", 5)]);
+        store.replace_file("a.ts".to_string(), 0, vec![sym("greet", 1), sym("run", 5)]);
         let hits = store.query("greet", 10);
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].name, "greet");
@@ -137,8 +184,8 @@ mod tests {
     #[test]
     fn replace_file_overwrites_previous_symbols_for_that_path() {
         let store = IndexStore::default();
-        store.replace_file("a.ts".to_string(), vec![sym("old", 1)]);
-        store.replace_file("a.ts".to_string(), vec![sym("new", 2)]);
+        store.replace_file("a.ts".to_string(), 0, vec![sym("old", 1)]);
+        store.replace_file("a.ts".to_string(), 0, vec![sym("new", 2)]);
         assert_eq!(store.status().symbol_count, 1);
         assert!(store.query("old", 10).is_empty());
         assert_eq!(store.query("new", 10).len(), 1);
@@ -147,7 +194,7 @@ mod tests {
     #[test]
     fn remove_file_drops_its_symbols() {
         let store = IndexStore::default();
-        store.replace_file("a.ts".to_string(), vec![sym("greet", 1)]);
+        store.replace_file("a.ts".to_string(), 0, vec![sym("greet", 1)]);
         store.remove_file("a.ts");
         assert_eq!(store.status().file_count, 0);
         assert!(store.query("greet", 10).is_empty());
@@ -158,6 +205,7 @@ mod tests {
         let store = IndexStore::default();
         store.replace_file(
             "a.ts".to_string(),
+            0,
             vec![sym("handle", 1), sym("handler", 2), sym("handlers", 3)],
         );
         assert_eq!(store.query("handle", 2).len(), 2);
@@ -167,10 +215,28 @@ mod tests {
     fn clear_resets_root_and_files() {
         let store = IndexStore::default();
         store.set_root(Some("/proj".to_string()));
-        store.replace_file("a.ts".to_string(), vec![sym("greet", 1)]);
+        store.replace_file("a.ts".to_string(), 0, vec![sym("greet", 1)]);
         store.clear();
         let status = store.status();
         assert_eq!(status.root, None);
         assert_eq!(status.file_count, 0);
+    }
+
+    #[test]
+    fn snapshot_then_load_snapshot_round_trips() {
+        let store = IndexStore::default();
+        store.set_root(Some("/proj".to_string()));
+        store.replace_file("/proj/a.ts".to_string(), 99, vec![sym("greet", 1)]);
+        let snap = store.snapshot();
+
+        let restored = IndexStore::default();
+        restored.load_snapshot(snap);
+        assert_eq!(restored.status().root, Some("/proj".to_string()));
+        assert_eq!(restored.status().file_count, 1);
+        assert_eq!(restored.query("greet", 10).len(), 1);
+        let snap2 = restored.snapshot();
+        assert_eq!(snap2.files.len(), 1);
+        assert_eq!(snap2.files[0].path, "/proj/a.ts");
+        assert_eq!(snap2.files[0].mtime_ms, 99);
     }
 }

@@ -33,6 +33,12 @@ pub fn is_indexable(path: &Path) -> bool {
     )
 }
 
+pub fn file_mtime_ms(path: &Path) -> Option<u64> {
+    let modified = std::fs::metadata(path).ok()?.modified().ok()?;
+    let dur = modified.duration_since(std::time::UNIX_EPOCH).ok()?;
+    Some(dur.as_millis() as u64)
+}
+
 pub fn collect_indexable_files(root: &Path) -> Vec<PathBuf> {
     let mut out = Vec::new();
     let walker = WalkBuilder::new(root)
@@ -62,7 +68,7 @@ pub fn run_index(root: &Path, store: &IndexStore, mut on_progress: impl FnMut(us
     let total = files.len();
     for (i, path) in files.iter().enumerate() {
         if let Ok(src) = std::fs::read_to_string(path) {
-            store.replace_file(to_canon(path), extract_symbols(&src));
+            store.replace_file(to_canon(path), file_mtime_ms(path).unwrap_or(0), extract_symbols(&src));
         }
         on_progress(i + 1, total);
     }
@@ -77,7 +83,7 @@ pub fn apply_change(store: &IndexStore, path: &Path) {
     }
     let key = to_canon(path);
     match std::fs::read_to_string(path) {
-        Ok(src) => store.replace_file(key, extract_symbols(&src)),
+        Ok(src) => store.replace_file(key, file_mtime_ms(path).unwrap_or(0), extract_symbols(&src)),
         Err(_) => store.remove_file(&key),
     }
 }

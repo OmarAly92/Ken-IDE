@@ -20,9 +20,13 @@ pub struct PersistedIndex {
     pub files: Vec<PersistedFile>,
 }
 
-fn tmp_path(path: &Path) -> std::path::PathBuf {
+fn unique_tmp_path(path: &Path) -> std::path::PathBuf {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
     let mut name = path.file_name().map(|s| s.to_os_string()).unwrap_or_default();
-    name.push(".tmp");
+    name.push(format!(".tmp.{}.{}", std::process::id(), nanos));
     path.with_file_name(name)
 }
 
@@ -38,7 +42,7 @@ pub fn save(path: &Path, index: &PersistedIndex) -> std::io::Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    let tmp = tmp_path(path);
+    let tmp = unique_tmp_path(path);
     std::fs::write(&tmp, &buf)?;
     std::fs::rename(&tmp, path)?;
     Ok(())
@@ -101,7 +105,11 @@ mod tests {
         let path = dir.path().join("index.kenidx");
         save(&path, &sample()).unwrap();
         assert!(path.exists());
-        assert!(!tmp_path(&path).exists());
+        let leftover_temp = std::fs::read_dir(dir.path())
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .any(|e| e.file_name().to_string_lossy().contains(".tmp"));
+        assert!(!leftover_temp);
     }
 
     #[test]

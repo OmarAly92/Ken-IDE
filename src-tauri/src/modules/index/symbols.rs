@@ -1,7 +1,7 @@
 use serde::Serialize;
 use tree_sitter::{Node, Parser};
 
-#[derive(Serialize, Clone, Debug, PartialEq, Eq)]
+#[derive(Serialize, Clone, Debug, PartialEq, Eq, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum SymbolKind {
     Function,
@@ -12,7 +12,7 @@ pub enum SymbolKind {
     Enum,
 }
 
-#[derive(Serialize, Clone, Debug, PartialEq, Eq)]
+#[derive(Serialize, Clone, Debug, PartialEq, Eq, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Symbol {
     pub name: String,

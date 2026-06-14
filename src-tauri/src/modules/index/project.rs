@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, RecvTimeoutError};
 use std::sync::Mutex;
@@ -9,6 +9,7 @@ use notify::{Config, Event, EventKind, RecommendedWatcher, RecursiveMode, Watche
 use tauri::{AppHandle, Emitter, Manager, State};
 
 use crate::modules::fs::to_canon;
+use crate::modules::index::persist::{self, PersistedIndex};
 use crate::modules::index::store::{IndexStatus, IndexStore, SymbolHit};
 use crate::modules::index::symbols::extract_symbols;
 use crate::modules::workspace::WorkspaceRegistry;
@@ -72,6 +73,50 @@ pub fn run_index(root: &Path, store: &IndexStore, mut on_progress: impl FnMut(us
         }
         on_progress(i + 1, total);
     }
+}
+
+pub fn reconcile(
+    root: &Path,
+    loaded: PersistedIndex,
+    store: &IndexStore,
+    mut on_progress: impl FnMut(usize, usize),
+) {
+    let mut cached: HashMap<String, crate::modules::index::persist::PersistedFile> = loaded
+        .files
+        .into_iter()
+        .map(|f| (f.path.clone(), f))
+        .collect();
+    let files = collect_indexable_files(root);
+    let total = files.len();
+    for (i, path) in files.iter().enumerate() {
+        let key = to_canon(path);
+        let current = file_mtime_ms(path).unwrap_or(u64::MAX);
+        match cached.remove(&key) {
+            Some(entry) if entry.mtime_ms >= current => {
+                store.replace_file(key, entry.mtime_ms, entry.symbols);
+            }
+            _ => {
+                if let Ok(src) = std::fs::read_to_string(path) {
+                    store.replace_file(key, current, extract_symbols(&src));
+                }
+            }
+        }
+        on_progress(i + 1, total);
+    }
+}
+
+pub fn load_or_index(
+    root: &Path,
+    cache_path: &Path,
+    store: &IndexStore,
+    on_progress: impl FnMut(usize, usize),
+) {
+    let canon = to_canon(root);
+    match persist::load(cache_path) {
+        Some(loaded) if loaded.root == canon => reconcile(root, loaded, store, on_progress),
+        _ => run_index(root, store, on_progress),
+    }
+    let _ = persist::save(cache_path, &store.snapshot());
 }
 
 const DEBOUNCE: Duration = Duration::from_millis(150);
@@ -283,6 +328,70 @@ mod tests {
         assert_eq!(progress.last(), Some(&(2, 2)));
         assert_eq!(store.query("greet", 10).len(), 1);
         assert_eq!(store.query("Repo", 10).len(), 1);
+    }
+
+    #[test]
+    fn reconcile_keeps_unchanged_reparses_changed_adds_new_drops_deleted() {
+        use crate::modules::index::persist::{PersistedFile, PersistedIndex};
+        use crate::modules::index::symbols::{Symbol, SymbolKind};
+
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        write(root, "keep.ts", "function realKeep() {}\n");
+        write(root, "change.ts", "function before() {}\n");
+        write(root, "new.ts", "function fresh() {}\n");
+
+        let keep_mtime = file_mtime_ms(&root.join("keep.ts")).unwrap();
+
+        let loaded = PersistedIndex {
+            version: 1,
+            root: to_canon(root),
+            files: vec![
+                PersistedFile {
+                    path: to_canon(&root.join("keep.ts")),
+                    mtime_ms: keep_mtime,
+                    symbols: vec![Symbol {
+                        name: "SENTINEL_FROM_CACHE".to_string(),
+                        kind: SymbolKind::Function,
+                        start_line: 1,
+                        end_line: 1,
+                    }],
+                },
+                PersistedFile {
+                    path: to_canon(&root.join("change.ts")),
+                    mtime_ms: 0,
+                    symbols: vec![Symbol {
+                        name: "before".to_string(),
+                        kind: SymbolKind::Function,
+                        start_line: 1,
+                        end_line: 1,
+                    }],
+                },
+                PersistedFile {
+                    path: to_canon(&root.join("gone.ts")),
+                    mtime_ms: 0,
+                    symbols: vec![Symbol {
+                        name: "deleted".to_string(),
+                        kind: SymbolKind::Function,
+                        start_line: 1,
+                        end_line: 1,
+                    }],
+                },
+            ],
+        };
+
+        write(root, "change.ts", "function after() {}\n");
+
+        let store = IndexStore::default();
+        reconcile(root, loaded, &store, |_done, _total| {});
+
+        assert_eq!(store.query("SENTINEL_FROM_CACHE", 10).len(), 1);
+        assert!(store.query("realKeep", 10).is_empty());
+        assert_eq!(store.query("after", 10).len(), 1);
+        assert!(store.query("before", 10).is_empty());
+        assert_eq!(store.query("fresh", 10).len(), 1);
+        assert!(store.query("deleted", 10).is_empty());
+        assert_eq!(store.status().file_count, 3);
     }
 
     #[test]
